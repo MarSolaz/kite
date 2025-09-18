@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>Barrilete — Reparado (Space + Touch)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{ --ui-font:16px/1.25 system-ui, -apple-system, "Segoe UI", Roboto, Arial; }
+  html,body{height:100%;margin:0;background:#ff7b7b;font:var(--ui-font);-webkit-font-smoothing:antialiased;color:#0c2530}
+  /* importante: touch-action none para que el navegador no capture gestos */
+  canvas{display:block; width:100%; height:100vh; touch-action: none; -ms-touch-action: none; outline:none;}
+  .hud{position:fixed; left:16px; top:14px; z-index:120; font-weight:800; color:#052428; font-size:18px}
+  .music-toggle{position:fixed; right:18px; bottom:18px; z-index:120; width:46px; height:46px; display:flex;align-items:center;justify-content:center;border-radius:12px;background:rgba(255,255,255,0.95); box-shadow:0 10px 30px rgba(9,12,14,0.06); cursor:pointer}
+  .music-toggle.muted{opacity:0.55}
+  .menu-wrap{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:200; }
+  .menu-card{ width:420px; max-width:94%; padding:20px 22px; border-radius:14px; background:transparent; box-shadow:none; text-align:center; }
+  .mode-btn{ padding:9px 14px; border-radius:10px; cursor:pointer; border:1px solid transparent; background:transparent; color:#0b2630; font-weight:700; min-width:130px; }
+  .mode-btn.active{ background:#ff7b7b; color:white; }
+  .start-btn{ display:block; width:100%; margin-top:6px; padding:11px 12px; border-radius:12px; background:#ff7b7b; color:#fff; font-weight:800; font-size:15px; border:none; cursor:pointer; }
+  .minutes-display{ min-width:72px; text-align:center; font-weight:800; font-size:16px; padding:6px 8px; border-radius:10px; background:#fbfbfb; border:1px solid #eef2f4; }
+  .overlay{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:300; pointer-events:auto; }
+  .overlay .card{ padding:22px; border-radius:12px; background:rgba(0,0,0,0.6) ; color:white; text-align:center; box-shadow:none; }
+  
+</style>
+</head>
+<body>
+
+<div class="hud" id="hud">Score: 0</div>
+<canvas id="game" role="img" aria-label="Juego de barrilete"></canvas>
+
+<audio id="bgMusic" src="wind.mp3" loop preload="auto"></audio>
+<div class="music-toggle muted" id="musicBtn" title="Activar / desactivar música" role="button" aria-pressed="false">
+  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M5 15V9a1 1 0 0 1 1-1h3l4-4v14l-4-4H6a1 1 0 0 1-1-1z" fill="#111"/></svg>
+</div>
+
+<div class="menu-wrap" id="menu">
+  <div class="menu-card" role="dialog" aria-label="Seleccionar modo">
+    <h3 style="margin:0;font-size:22px;font-weight:800;color:#ff7b7b">Elegí tu viaje</h3>
+    <p style="color:#5f6b71;margin:8px 0 14px">Volá esquivando las aves para mantener el puntaje.</p>
+    <div style="display:flex;gap:10px;justify-content:center;margin-bottom:12px">
+      <button class="mode-btn active" id="btnEterno" data-mode="eterno" aria-pressed="true">Viaje eterno</button>
+      <button class="mode-btn" id="btnFugaz" data-mode="fugaz" aria-pressed="false">Viaje fugaz</button>
+    </div>
+    <div id="fugazControls" style="display:none;margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:10px;justify-content:center">
+        <button class="mode-btn" id="minDown">−</button>
+        <div class="minutes-display" id="minutesDisplay" aria-live="polite">3</div>
+        <button class="mode-btn" id="minUp">+</button>
+      </div>
+      <div style="font-size:13px;color:#6b7780;margin-top:8px">Duración en minutos</div>
+    </div>
+    <button class="start-btn" id="startBtn">Comenzar</button>
+    <p style="font-size:12px;color:#6b7780;margin-top:8px">¡Cuidado con las ráfagas repentinas!</p>
+  </div>
+</div>
+
+<div class="overlay" id="gameOver" style="display:none;">
+  <div class="card">
+    <div style="font-size:20px;font-weight:800" id="finalTitle">Fin del vuelo</div>
+    <div style="font-size:18px;margin-top:8px" id="finalScore">Puntaje: 0</div>
+    <div style="margin-top:12px;color:#cdd6da">Presioná para volver al inicio</div>
+  </div>
+</div>
+
+<div class="weather-indicator" id="weatherIndicator">Lluvia</div>
+
+<script>
+(() => {
+  // ----------------- CONSTANTES -----------------
+  const WAVELENGTH = 0.5;
+  const AMPLITUDE_FACTOR = 0.1;
+  const PATH_SPEED = 0.005;
+  const SECOND_HARMONIC = 0.25;
+
+  let FORWARD_SPEED = 2.4;
+  const SPRING_K = 0.045;
+  const MASS = 1.0;
+  const SPRING_C = 2 * Math.sqrt(SPRING_K * MASS) * 0.98;
+  const JUMP_IMPULSE = -10.8;
+
+  const BASE_SPAWN_INTERVAL = 90;
+  const MAX_BIRDS = 12;
+  const BIRD_SPEED_BASE = 1.5;
+
+  const WEATHER_MIN_SEC = 6;
+  const WEATHER_MAX_SEC = 18;
+
+  // ----------------- SETUP -----------------
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const hud = document.getElementById('hud');
+  const menu = document.getElementById('menu');
+  const startBtn = document.getElementById('startBtn');
+  const btnEterno = document.getElementById('btnEterno');
+  const btnFugaz = document.getElementById('btnFugaz');
+  const fugazControls = document.getElementById('fugazControls');
+  const minutesDisplay = document.getElementById('minutesDisplay');
+  const music = document.getElementById('bgMusic');
+  const musicBtn = document.getElementById('musicBtn');
+  const gameOverEl = document.getElementById('gameOver');
+  const finalScoreEl = document.getElementById('finalScore');
+  const weatherIndicator = document.getElementById('weatherIndicator');
+
+  function fit(){ canvas.width = innerWidth; canvas.height = innerHeight; }
+  addEventListener('resize', fit, { passive:true }); fit();
+
+  // make canvas focusable so keyboard events reach it reliably
+  canvas.tabIndex = 0;
+
+  // audio
+  music.volume = 0.28; music.loop = true;
+  let musicAllowed = false;
+  async function tryPlayMusicOnceAsync(){
+    if(musicAllowed) return;
+    try { const p = music.play(); if(p && p.then) await p; musicAllowed = true; musicBtn.classList.remove('muted'); musicBtn.setAttribute('aria-pressed','true'); } catch(e) {}
+  }
+  function tryPlayMusicOnce(){ tryPlayMusicOnceAsync().catch(()=>{}); }
+  function toggleMusic(){ try{ if(music.paused){ music.play().catch(()=>{}); musicBtn.classList.remove('muted'); musicBtn.setAttribute('aria-pressed','true'); musicAllowed=true; } else { music.pause(); musicBtn.classList.add('muted'); musicBtn.setAttribute('aria-pressed','false'); } }catch(e){} }
+  addEventListener('pointerdown', tryPlayMusicOnce, {passive:true});
+  addEventListener('keydown', tryPlayMusicOnce, {passive:true});
+  musicBtn.addEventListener('click', (e)=>{ e.stopPropagation(); toggleMusic(); });
+  music.addEventListener('error', ()=>{ console.warn('Audio "wind.mp3" no encontrado o inválido.'); });
+
+  // utils
+  const rand = (a,b)=> a + Math.random()*(b-a);
+  const clamp = (v,a,b)=> Math.max(a,Math.min(b,v));
+  function hexToRgb(h){h=h.replace('#','');return {r:parseInt(h.slice(0,2),16), g:parseInt(h.slice(2,4),16), b:parseInt(h.slice(4,6),16)};}
+  function lerpColor(a,b,t){ const A=hexToRgb(a), B=hexToRgb(b); const r=Math.round(A.r+(B.r-A.r)*t), g=Math.round(A.g+(B.g-A.g)*t), bl=Math.round(A.b+(B.b-A.b)*t); return `rgb(${r},${g},${bl})`; }
+
+  // ----------------- MUNDO -----------------
+  let frame = 0;
+  let worldX = 0;
+  let score = 0;
+
+  const dayPhases = [
+    { name:'amanecer', sky:'#F5E6D9', cloud:'#fffefc' },
+    { name:'día', sky:'#A6DBF5', cloud:'#ffffff' },
+    { name:'atardecer', sky:'#FFD7C1', cloud:'#fff6f2' },
+    { name:'noche', sky:'#192836', cloud:'#dbe9f7' }
+  ];
+
+  function pathY_world(wx){
+    const wavelengthPx = canvas.width * WAVELENGTH;
+    const nx = (wx / wavelengthPx) * Math.PI * 2;
+    const amplitude = canvas.height * AMPLITUDE_FACTOR;
+    const main = Math.sin(nx + frame * PATH_SPEED) * amplitude;
+    const second = Math.sin(nx * 2 + frame * PATH_SPEED * 0.6) * amplitude * SECOND_HARMONIC;
+    const topMargin = canvas.height * 0.12;
+    const bottomMargin = canvas.height * 0.88;
+    const center = (topMargin + bottomMargin) / 2;
+    const y = center + main + second;
+    return clamp(y, topMargin + 8, bottomMargin - 8);
+  }
+
+  // ----------------- ENTIDADES -----------------
+  class Kite {
+    constructor(screenX){
+      this.screenX = screenX;
+      this.screenOffsetX = 0;
+      this.worldX = this.screenX + worldX;
+      const initialY = pathY_world(this.worldX) - 60;
+      this.y = initialY;
+      this.vy = 0;
+      this.mass = MASS;
+      this.width = 88; this.height = 70;
+      this.jumpImpulse = 0;
+      this.tilt = 0;
+      this.falling = false;
+      this.stain = 0;
+    }
+    update(dt, gust){
+      if(gust && gust.active){
+        const progress = 1 - (gust.timer / Math.max(1, gust.duration));
+        const push = Math.sin(progress * Math.PI) * gust.strength * 40; // px to the right
+        this.screenOffsetX = push;
+      } else {
+        this.screenOffsetX *= 0.82;
+        if(Math.abs(this.screenOffsetX) < 0.5) this.screenOffsetX = 0;
+      }
+      this.worldX = (this.screenX + this.screenOffsetX) + worldX;
+
+      if(this.falling){
+        const gravity = 0.28;
+        const drag = 0.02;
+        this.vy += gravity * dt * 60;
+        this.vy *= (1 - drag);
+        this.y += this.vy * dt * 60;
+        this.tilt = clamp(this.vy * 0.01, -1.2, 1.2);
+      } else {
+        const desiredBase = pathY_world(this.worldX);
+        const amplitudeFactor = 0.09 * (1 - Math.min(0.65, this.stain * 0.8));
+        const phase = (this.worldX / (canvas.width * WAVELENGTH)) * Math.PI * 2;
+        const followBob = Math.sin(phase + frame * PATH_SPEED) * (canvas.height * AMPLITUDE_FACTOR * amplitudeFactor);
+        const desiredY = desiredBase - this.height * 0.35 + followBob;
+        const force = SPRING_K * (desiredY - this.y) - SPRING_C * this.vy + this.jumpImpulse;
+        const accel = force / this.mass;
+        this.vy += accel * dt;
+        this.y += this.vy * dt * 60;
+        this.jumpImpulse *= 0.58;
+        const topLimit = Math.max(6, canvas.height * 0.06);
+        const bottomLimit = canvas.height - Math.max(6, canvas.height * 0.06) - this.height;
+        if(this.y < topLimit){ this.y = topLimit; this.vy = Math.max(0,this.vy); }
+        if(this.y > bottomLimit){ this.y = bottomLimit; this.vy = Math.min(0,this.vy); }
+        this.tilt = clamp(this.vy * 0.012 + 0.12, -0.6, 0.6);
+      }
+    }
+    jump(){
+  // límite de saltos (puede definirse en el constructor: this.maxJumps = 2)
+  const max = (typeof this.maxJumps === 'number') ? this.maxJumps : 2;
+  if (this.jumpCount >= max) return;
+
+  // impulso instantáneo: asignamos la velocidad vertical (negativa = hacia arriba)
+  // multiplier controla la altura del salto (0.0 = sin salto, 1.0 = JUMP_IMPULSE completo)
+  const multiplier = 0.5; // probar 0.5 a 0.9 según lo que quieras
+  this.vy = JUMP_IMPULSE * multiplier;
+
+  // limpiamos cualquier impulso previo usado por la versión antigua
+  this.jumpImpulse = 0;
+
+  // contamos el salto (para doble salto)
+  this.jumpCount++;
+}
+
+    draw(){
+      const x = this.screenX + this.screenOffsetX;
+      ctx.save(); ctx.translate(x, this.y + this.height*0.8); ctx.rotate(this.tilt*0.25); ctx.globalAlpha = 0.12; ctx.fillStyle='#000'; ctx.beginPath(); ctx.ellipse(0,6,this.width*0.48,8,0,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1; ctx.restore();
+      ctx.save(); ctx.translate(x, this.y); ctx.rotate(this.tilt);
+      ctx.beginPath(); ctx.moveTo(0, -this.height*0.5); ctx.lineTo(this.width*0.5, 0); ctx.lineTo(0, this.height*0.5); ctx.lineTo(-this.width*0.5, 0); ctx.closePath();
+      const g = ctx.createLinearGradient(x - this.width/2, this.y - this.height/2, x + this.width/2, this.y + this.height/2);
+      const stainAmt = Math.min(1, this.stain);
+      const c1 = blendDark('#ff7b7b', stainAmt*0.28);
+      const c2 = blendDark('#ffd18b', stainAmt*0.2);
+      const c3 = blendDark('#ffcf4d', stainAmt*0.18);
+      g.addColorStop(0,c1); g.addColorStop(0.6,c2); g.addColorStop(1,c3);
+      ctx.fillStyle = g; ctx.fill();
+      if(this.stain > 0.06){
+        ctx.globalAlpha = Math.min(0.9, this.stain * 0.9);
+        ctx.beginPath();
+        ctx.ellipse(-12, -2, 6 + this.stain*8, 4 + this.stain*6, -0.4, 0, Math.PI*2);
+        ctx.ellipse(8, 6, 4 + this.stain*6, 3 + this.stain*5, 0.2, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(40,40,45,0.18)';
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      ctx.beginPath(); ctx.moveTo(0, this.height*0.5); ctx.lineTo(0, this.height*1.6); ctx.strokeStyle='rgba(20,20,20,0.18)'; ctx.lineWidth=2; ctx.stroke();
+      ctx.restore();
+    }
+    rect(){ const x = this.screenX + this.screenOffsetX; return { left:x - this.width/2, right:x + this.width/2, top: this.y - this.height/2, bottom: this.y + this.height/2 }; }
+  }
+
+  class Bird {
+    constructor(){
+  // spawn a la derecha del viewport (como antes) pero con variación en la distancia
+  this.worldX = worldX + canvas.width + rand(180, 620);
+
+  // base para la Y: siguiente punto de la trayectoria en esa worldX
+  const pathY = pathY_world(this.worldX);
+
+  // Probabilidades de spawn vertical:
+  // - 60% en la línea (cerca de path)
+  // - 20% por encima (hasta -maxOffset)
+  // - 20% por debajo (hasta +maxOffset)
+  const p = Math.random();
+  const maxOffset = 120; // máximo pixel de desviación vertical (ajustable)
+
+  if (p < 0.6) {
+    // cerca de la línea (variación pequeña)
+    this.y = pathY + rand(-28, 28);
+  } else if (p < 0.8) {
+    // por encima (más alto)
+    this.y = pathY + rand(-maxOffset, -30);
+  } else {
+    // por debajo (más bajo)
+    this.y = pathY + rand(30, maxOffset);
+  }
+
+  // además, con pequeña probabilidad, forzamos que salga relativa al kite (más interacción)
+  if (Math.random() < 0.12 && typeof kite !== 'undefined') {
+    // spawnear en la vertical del kite +/- un rango (pero asegurando no salga fuera del canvas)
+    const nearRange = 90; // rango alrededor del kite
+    this.y = clamp(kite.y + rand(-nearRange, nearRange), 8, canvas.height - 8);
+    // y acercamos la spawn X un poco para que aparezca más pronto
+    this.worldX = worldX + canvas.width + rand(10, 120);
+  }
+
+  // tamaño/velocidad/otros (mantener lo anterior)
+  this.w = rand(36, 68);
+  this.h = rand(16, 32);
+  this.speed = BIRD_SPEED_BASE + rand(0, 0.8);
+  this.hit = false;
+  this.flap = Math.random()*6;
+  this.col = `rgba(18,18,18,${rand(0.88,0.98)})`;
+}
+
+    update(dt){
+      this.worldX -= (this.speed + FORWARD_SPEED) * dt * 60;
+      const targetY = pathY_world(this.worldX) + Math.sin(this.flap*0.5)*6 + rand(-6,6);
+      this.y += (targetY - this.y) * 0.04;
+      this.flap += 0.22 + Math.random()*0.06;
+    }
+    screenX(){ return this.worldX - worldX; }
+    draw(){
+      const sx = this.screenX();
+      ctx.save(); ctx.translate(sx, this.y);
+      ctx.beginPath(); ctx.ellipse(0,0,this.w*0.28,this.h*0.5,0,0,Math.PI*2); ctx.fillStyle = this.col; ctx.fill();
+      const wingSpan = this.w*0.9; const wingY = Math.sin(this.flap)*8;
+      ctx.beginPath(); ctx.moveTo(-wingSpan*0.3,0); ctx.quadraticCurveTo(-wingSpan*0.05,-16+wingY,wingSpan*0.45,-6); ctx.moveTo(-wingSpan*0.3,0); ctx.quadraticCurveTo(-wingSpan*0.05,16-wingY,wingSpan*0.45,6);
+      ctx.lineWidth = 2.4; ctx.strokeStyle = '#111'; ctx.stroke();
+      ctx.restore();
+    }
+    offscreen(){ return this.screenX() < -180; }
+    collide(kRect){
+      const sx = this.screenX();
+      const bx1 = sx - this.w*0.5, bx2 = sx + this.w*0.5;
+      const by1 = this.y - this.h*0.6, by2 = this.y + this.h*0.6;
+      return !(kRect.right < bx1 || kRect.left > bx2 || kRect.bottom < by1 || kRect.top > by2);
+    }
+  }
+
+  class Cloud {
+    constructor(){ this.x = rand(-300, canvas.width+300); this.y = rand(-80, canvas.height+80); this.r = rand(40,130); this.speed = rand(0.1,0.75); this.a = rand(0.35,0.85); this.shapes = Math.round(rand(3,6)); this.offsets = Array.from({length:this.shapes}, ()=> ({x:rand(-this.r*0.6,this.r*0.6), y:rand(-this.r*0.25,this.r*0.25), s:rand(0.6,1.3)})); }
+    update(wind, forward, gustPush){
+      this.x -= (this.speed + wind*0.5 + forward*0.1 + gustPush);
+      if(this.x < -this.r*3) this.x = canvas.width + this.r*3;
+      if(this.x > canvas.width + this.r*3) this.x = -this.r*3;
+    }
+    draw(col){
+      ctx.save();
+      for(let i=0;i<this.shapes;i++){
+        const o = this.offsets[i];
+        ctx.globalAlpha = Math.max(0.06, this.a * (0.6 + i*0.08));
+        ctx.beginPath();
+        ctx.ellipse(this.x + o.x, this.y + o.y, this.r*o.s*1.05, this.r*o.s*0.65, 0, 0, Math.PI*2);
+        const g = ctx.createRadialGradient(this.x + o.x - this.r*o.s*0.2, this.y + o.y - this.r*o.s*0.1, this.r*0.05, this.x + o.x, this.y + o.y, this.r*o.s*1.1);
+        g.addColorStop(0, col); g.addColorStop(1, `rgba(255,255,255,0.02)`);
+        ctx.fillStyle = g;
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
+  }
+
+  class Drop {
+    constructor(){ this.x = rand(0,canvas.width); this.y = rand(-canvas.height, 0); this.len = rand(8,18); this.speed = rand(300,900)/100; this.ang = rand(-0.25,0.25); }
+    update(dt, wind, gustPush){ this.x += (wind*40 + gustPush*8) * dt; this.y += this.speed * dt * 180; if(this.y > canvas.height + 30) { this.y = rand(-120,-10); this.x = rand(-80,canvas.width+80); } }
+    draw(){ ctx.beginPath(); ctx.moveTo(this.x, this.y); ctx.lineTo(this.x + this.ang*6, this.y + this.len); ctx.lineWidth = 1.1; ctx.strokeStyle = 'rgba(170,200,240,0.85)'; ctx.stroke(); }
+  }
+  class Flake {
+    constructor(){ this.x = rand(0,canvas.width); this.y = rand(-canvas.height, 0); this.r = rand(1.6,4.2); this.speed = rand(15,55)/10; this.osc = Math.random()*6; }
+    update(dt, wind, gustPush){ this.osc += dt * (0.8 + Math.random()*0.6); this.x += Math.sin(this.osc)*0.4 + wind*12*dt + gustPush*0.18*dt; this.y += this.speed * dt * 40; if(this.y > canvas.height + 12) { this.y = rand(-120,-10); this.x = rand(-80,canvas.width+80); } }
+    draw(){ ctx.beginPath(); ctx.arc(this.x,this.y,this.r,0,Math.PI*2); ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.fill(); }
+  }
+
+  // ----------------- ESTADO -----------------
+  let clouds = Array.from({length:20}, ()=> new Cloud());
+  let birds = [];
+  let drops = [];
+  let flakes = [];
+  let kite = new Kite(Math.round(canvas.width * 0.22));
+  let frameSpawn = 0;
+
+  let mode = 'eterno';
+  let minutes = 3;
+  let gameStarted = false;
+  let startTime = 0;
+  let durationSec = Infinity;
+  let gameOver = false;
+
+  let weather = 'clear';
+  let weatherTimer = 0;
+  let weatherDuration = 0;
+  let weatherLabelTimer = 0;
+
+  let gust = { strength: 0, timer: 0, duration: 0, active: false };
+
+  // ----------------- CONTROLES / UI -----------------
+  // Space (teclado) -> salto
+  // Reemplazamos por una escucha robusta en window
+  window.addEventListener('keydown', (e) => {
+    const isSpace = e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar';
+    if (!isSpace) return;
+    if (e && e.preventDefault) try { e.preventDefault(); } catch (err) {}
+
+    if (gameStarted && !gameOver && !kite.falling){
+      kite.jump();
+      tryPlayMusicOnce();
+    } else if (gameOver){
+      resetToMenu();
+    }
+  }, { passive: false });
+
+  // Pointer/touch/click -> salto (handler registrado globalmente para evitar casos en que canvas no reciba el evento)
+  function handlePointerJump(e){
+    if(e && e.preventDefault) try { e.preventDefault(); } catch(err) {}
+
+    // si el objetivo está dentro de controles UI, ignoramos (no queremos que los botones disparen saltos)
+    if (e.target && (e.target.closest('.menu-card') || e.target.closest('.music-toggle') || e.target.closest('.mode-btn') || e.target.closest('.start-btn'))) {
+      return;
+    }
+
+    // si no está corriendo el juego, usar el toque sólo para activar audio o volver al menú
+    if(!gameStarted || gameOver){
+      tryPlayMusicOnce();
+      if(gameOver && (Date.now() - (window.__lastGameOverTouch||0) > 120)) { // evitar doble disparo
+        window.__lastGameOverTouch = Date.now();
+        resetToMenu();
+      }
+      return;
+    }
+    if(kite.falling) return;
+    kite.jump();
+    tryPlayMusicOnce();
+  }
+
+  // registrar globalmente (captura amplia). Usamos passive:false para poder preventDefault()
+  window.addEventListener('pointerdown', handlePointerJump, { passive: false });
+  // fallbacks para compatibilidad con navegadores antiguos
+  window.addEventListener('mousedown', handlePointerJump, { passive: false });
+  window.addEventListener('touchstart', handlePointerJump, { passive: false });
+
+  // clicks fuera del canvas sólo despiertan audio / no saltan
+  document.addEventListener('pointerdown', (e) => {
+    if(!gameStarted || menu.style.display === 'flex') tryPlayMusicOnce();
+  }, { passive: true });
+
+  // UI buttons
+  btnEterno.addEventListener('click', ()=>{ mode='eterno'; btnEterno.classList.add('active'); btnEterno.setAttribute('aria-pressed','true'); btnFugaz.classList.remove('active'); btnFugaz.setAttribute('aria-pressed','false'); fugazControls.style.display='none'; });
+  btnFugaz.addEventListener('click', ()=>{ mode='fugaz'; btnFugaz.classList.add('active'); btnFugaz.setAttribute('aria-pressed','true'); btnEterno.classList.remove('active'); btnEterno.setAttribute('aria-pressed','false'); fugazControls.style.display='block'; });
+
+  document.getElementById('minUp').addEventListener('click', ()=>{ minutes=Math.min(1440,minutes+1); minutesDisplay.textContent=minutes; });
+  document.getElementById('minDown').addEventListener('click', ()=>{ minutes=Math.max(1,minutes-1); minutesDisplay.textContent=minutes; });
+
+  // focus canvas when starting to ensure Space works
+  startBtn.addEventListener('click', ()=>{
+    menu.style.display='none';
+    try { document.activeElement && document.activeElement.blur(); canvas.focus(); } catch(e){}
+    birds=[]; clouds = Array.from({length:20}, ()=> new Cloud()); drops = []; flakes = [];
+    kite = new Kite(Math.round(canvas.width * 0.22));
+    score = 100; frame = 0; worldX = 0; frameSpawn = 0; gameOver=false;
+    if(mode==='fugaz'){ durationSec = minutes * 60; startTime = performance.now(); } else { durationSec = Infinity; startTime = 0; }
+    gameStarted = true;
+    tryPlayMusicOnce();
+    scheduleNextWeather();
+  });
+
+  function resetToMenu(){
+    menu.style.display='flex';
+    if(gameOver) gameOverEl.style.display='none';
+    gameOver=false; gameStarted=false; durationSec=Infinity; startTime=0;
+    birds=[]; clouds = Array.from({length:20}, ()=> new Cloud());
+    drops = []; flakes = [];
+    kite = new Kite(Math.round(canvas.width * 0.22));
+    score = 100; hud.textContent = `Score: ${score}`;
+    weather = 'clear'; weatherTimer = 0; weatherDuration = 0; weatherLabelTimer = 0; weatherIndicator.classList.remove('visible');
+    gust = { strength:0, timer:0, duration:0, active:false };
+    if(mode === 'fugaz'){ fugazControls.style.display='block'; btnFugaz.classList.add('active'); btnEterno.classList.remove('active'); } else { fugazControls.style.display='none'; btnEterno.classList.add('active'); btnFugaz.classList.remove('active'); }
+  }
+
+  function endGameNow(){
+    gameOver = true; gameStarted = false;
+    finalScoreEl.textContent = `Puntaje: ${score}`;
+    gameOverEl.style.display = 'flex';
+  }
+
+  // ----------------- CLIMA / GUSTS -----------------
+  function scheduleNextWeather(){
+    weatherDuration = Math.round(rand(WEATHER_MIN_SEC, WEATHER_MAX_SEC) * 60);
+    weatherTimer = 0;
+    const r = Math.random();
+    let pick;
+    if(r < 0.25) pick = 'clear';
+    else if(r < 0.6) pick = 'rain';
+    else if(r < 0.9) pick = 'snow';
+    else pick = 'gust';
+    weather = pick;
+    weatherLabelTimer = 90;
+    weatherIndicator.textContent = weather === 'clear' ? 'Cielo despejado' : (weather === 'rain' ? 'Lluvia' : (weather === 'snow' ? 'Nieve' : 'Ráfagas'));
+    weatherIndicator.classList.add('visible');
+    if(weather === 'rain'){
+      drops = Array.from({length: Math.round(canvas.width / 12)}, ()=> new Drop());
+    } else { drops = []; }
+    if(weather === 'snow'){
+      flakes = Array.from({length: Math.round(canvas.width / 18)}, ()=> new Flake());
+    } else { flakes = []; }
+    gust = { strength:0, timer:0, duration:0, active:false };
+  }
+
+  function maybeTriggerGust(){
+    if(gust.active) return;
+    if(weather === 'gust' || (weather === 'clear' && Math.random() < 0.008) || (weather === 'rain' && Math.random() < 0.006)){
+      gust.active = true;
+      gust.duration = Math.round(rand(28, 100));
+      gust.timer = gust.duration;
+      gust.strength = rand(1.2, 3.6);
+    }
+  }
+
+  // ----------------- Bucle principal -----------------
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min(0.032, (now - last)/1000) || (1/60);
+    last = now;
+
+    if(gameStarted && !gameOver && !kite.falling){
+      worldX += FORWARD_SPEED * dt * 60;
+    } else if(gameStarted && !gameOver && kite.falling){
+      worldX += (FORWARD_SPEED * 0.4) * dt * 60;
+    }
+
+    if(gameStarted && !gameOver){
+      weatherTimer++;
+      if(weatherTimer >= weatherDuration){
+        scheduleNextWeather();
+      } else {
+        if(Math.random() < 0.003) maybeTriggerGust();
+      }
+      if(gust.active){
+        gust.timer--;
+        if(gust.timer <= 0){ gust.active = false; gust.strength = 0; gust.timer = 0; gust.duration = 0; }
+      }
+    }
+
+    const phaseI = Math.floor(frame / (60*20)) % dayPhases.length;
+    const p = dayPhases[phaseI], q = dayPhases[(phaseI+1)%dayPhases.length];
+    const tPhase = (frame % (60*20)) / (60*20);
+    const skyColor = lerpColor(p.sky, q.sky, tPhase);
+    ctx.fillStyle = skyColor;
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    const cloudCol = lerpColor(p.cloud, q.cloud, tPhase);
+    const wind = Math.sin(frame * 0.0038) * 0.6;
+    const gustPush = gust.active ? Math.sin((1 - (gust.timer / gust.duration)) * Math.PI) * gust.strength * 2.6 : 0;
+    for(const c of clouds){ c.update(wind, FORWARD_SPEED, gustPush); c.draw(cloudCol); }
+
+    if(weather === 'rain'){
+      for(const d of drops){ d.update(dt, wind, gustPush); d.draw(); }
+    } else if(weather === 'snow'){
+      for(const f of flakes){ f.update(dt, wind, gustPush); f.draw(); }
+    }
+    if(weatherLabelTimer > 0){ weatherLabelTimer--; }
+    if(weatherLabelTimer === 0){ weatherIndicator.classList.remove('visible'); }
+
+    frameSpawn++;
+    const spawnInterval = Math.max(10, Math.round(BASE_SPAWN_INTERVAL - Math.min(40, frame*0.001) - Math.round(FORWARD_SPEED)));
+    if(frameSpawn >= spawnInterval && gameStarted && !gameOver){
+      birds.push(new Bird());
+      frameSpawn = 0;
+      if(birds.length > MAX_BIRDS) birds.shift();
+    }
+
+    for(let i = birds.length -1; i >=0; i--){
+      const b = birds[i];
+      b.update(dt);
+      b.draw();
+      if(!b.hit && b.collide(kite.rect())){
+        score = Math.max(0, score - 10);
+        b.hit = true;
+        hud.textContent = `Score: ${score}`;
+      }
+      if(b.offscreen()) birds.splice(i,1);
+    }
+
+    if(gameStarted && weather === 'snow' && flakes.length){
+      let near = 0;
+      for(const f of flakes){
+        if(Math.abs(f.x - (kite.screenX + kite.screenOffsetX)) < 48 && Math.abs(f.y - kite.y) < 48) near++;
+      }
+      if(near > 0){
+        kite.stain = clamp(kite.stain + near * 0.0009 * (dt*60), 0, 1.0);
+      } else {
+        kite.stain = clamp(kite.stain - 0.0004 * (dt*60), 0, 1.0);
+      }
+    } else {
+      kite.stain = clamp(kite.stain - 0.0005 * (dt*60), 0, 1.0);
+    }
+
+    kite.update(dt, gust);
+    kite.draw();
+
+    if(gameStarted && mode==='fugaz' && isFinite(durationSec)){
+      const elapsed = (performance.now() - startTime)/1000;
+      const remaining = Math.max(0, durationSec - elapsed);
+      if(!kite.falling){
+        hud.textContent = `Tiempo: ${formatTime(Math.max(0, Math.floor(remaining)))} | Score: ${score}`;
+      }
+      if(elapsed >= durationSec && !kite.falling){
+        kite.falling = true;
+      }
+      if(kite.falling){
+        const bottomLimit = canvas.height - Math.max(6, canvas.height * 0.06) - kite.height;
+        if(kite.y >= bottomLimit - 2){
+          endGameNow();
+        }
+      }
+    } else {
+      hud.textContent = `Score: ${score}`;
+    }
+
+    frame++;
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // ----------------- helpers -----------------
+  function formatTime(s){ if(!isFinite(s)) return '--:--'; s = Math.max(0, Math.floor(s)); const mm = Math.floor(s/60); const ss = s%60; return `${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`; }
+
+  function blendDark(hex, amt){
+    const c = hexToRgb(hex);
+    const m = 1 - amt;
+    const r = Math.round(c.r * m); const g = Math.round(c.g * m); const b = Math.round(c.b * m);
+    return `rgb(${r},${g},${b})`;
+  }
+
+  // iniciar menu por defecto
+  resetToMenu();
+
+})();
+</script>
+
+</body>
+</html>
