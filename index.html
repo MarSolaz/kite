@@ -8,38 +8,25 @@
   :root{ --ui-font:16px/1.25 system-ui, -apple-system, "Segoe UI", Roboto, Arial; }
   html,body{height:100%;margin:0;background:#ff7b7b;font:var(--ui-font);-webkit-font-smoothing:antialiased;color:#0c2530}
   /* importante: touch-action none para que el navegador no capture gestos */
-  canvas{
-    display:block;
-    width:100%;
-    height:100vh;
-    touch-action: none;
-    -ms-touch-action: none;
-    -webkit-user-select: none;
-    -webkit-touch-callout: none;
-    -webkit-user-drag: none;
-    user-select: none;
-    outline:none;
-    -webkit-tap-highlight-color: transparent;
-  }
+  canvas{display:block; width:100%; height:100vh; touch-action: none; -ms-touch-action: none; outline:none;}
   .hud{position:fixed; left:16px; top:14px; z-index:120; font-weight:800; color:#052428; font-size:18px}
   .music-toggle{position:fixed; right:18px; bottom:18px; z-index:120; width:46px; height:46px; display:flex;align-items:center;justify-content:center;border-radius:12px;background:rgba(255,255,255,0.95); box-shadow:0 10px 30px rgba(9,12,14,0.06); cursor:pointer}
   .music-toggle.muted{opacity:0.55}
-  .menu-wrap{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:200; pointer-events:auto; }
+  .menu-wrap{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:200; }
   .menu-card{ width:420px; max-width:94%; padding:20px 22px; border-radius:14px; background:transparent; box-shadow:none; text-align:center; }
   .mode-btn{ padding:9px 14px; border-radius:10px; cursor:pointer; border:1px solid transparent; background:transparent; color:#0b2630; font-weight:700; min-width:130px; }
   .mode-btn.active{ background:#ff7b7b; color:white; }
   .start-btn{ display:block; width:100%; margin-top:6px; padding:11px 12px; border-radius:12px; background:#ff7b7b; color:#fff; font-weight:800; font-size:15px; border:none; cursor:pointer; }
   .minutes-display{ min-width:72px; text-align:center; font-weight:800; font-size:16px; padding:6px 8px; border-radius:10px; background:#fbfbfb; border:1px solid #eef2f4; }
   .overlay{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:300; pointer-events:auto; }
-  .overlay.hidden{ display:none; pointer-events:none; }
   .overlay .card{ padding:22px; border-radius:12px; background:rgba(0,0,0,0.6) ; color:white; text-align:center; box-shadow:none; }
-  .weather-indicator{ position:fixed; left:50%; transform:translateX(-50%); top:18px; background:rgba(255,255,255,0.9); padding:6px 12px; border-radius:12px; box-shadow:0 6px 18px rgba(0,0,0,0.08); z-index:130; font-weight:700; color:#123; opacity:0; transition:opacity .28s; pointer-events:none; }
-  .weather-indicator.visible{ opacity:1; }
+  .weather-indicator{ position:fixed; right:16px; top:14px; padding:8px 10px; border-radius:10px; background:rgba(255,255,255,0.9); z-index:120; font-weight:700; color:#07303a; display:inline-block; transform:translateY(0); transition:opacity .35s; opacity:0}
+  .weather-indicator.visible{ opacity:1 }
 </style>
 </head>
 <body>
 
-<div class="hud" id="hud">Score: 0</div>
+<div class="hud" id="hud" aria-live="polite">Score: 0</div>
 <canvas id="game" role="img" aria-label="Juego de barrilete"></canvas>
 
 <audio id="bgMusic" src="wind.mp3" loop preload="auto"></audio>
@@ -68,7 +55,7 @@
   </div>
 </div>
 
-<div class="overlay hidden" id="gameOver">
+<div class="overlay" id="gameOver" style="display:none;">
   <div class="card">
     <div style="font-size:20px;font-weight:800" id="finalTitle">Fin del vuelo</div>
     <div style="font-size:18px;margin-top:8px" id="finalScore">Puntaje: 0</div>
@@ -96,7 +83,7 @@
   const MAX_BIRDS = 12;
   const BIRD_SPEED_BASE = 1.5;
 
-  const WEATHER_MIN_SEC = 6;
+  const WEATHER_MIN_SEC = 6;  // expresión en segundos (luego convertimos a frames)
   const WEATHER_MAX_SEC = 18;
 
   // ----------------- SETUP -----------------
@@ -115,7 +102,13 @@
   const finalScoreEl = document.getElementById('finalScore');
   const weatherIndicator = document.getElementById('weatherIndicator');
 
-  function fit(){ canvas.width = innerWidth; canvas.height = innerHeight; }
+  function fit(){ 
+    // simple fit (puedes mejorar con DPR más adelante)
+    canvas.width = innerWidth;
+    canvas.height = innerHeight;
+    canvas.style.width = innerWidth + 'px';
+    canvas.style.height = innerHeight + 'px';
+  }
   addEventListener('resize', fit, { passive:true }); fit();
 
   // make canvas focusable so keyboard events reach it reliably
@@ -130,6 +123,8 @@
   }
   function tryPlayMusicOnce(){ tryPlayMusicOnceAsync().catch(()=>{}); }
   function toggleMusic(){ try{ if(music.paused){ music.play().catch(()=>{}); musicBtn.classList.remove('muted'); musicBtn.setAttribute('aria-pressed','true'); musicAllowed=true; } else { music.pause(); musicBtn.classList.add('muted'); musicBtn.setAttribute('aria-pressed','false'); } }catch(e){} }
+  addEventListener('pointerdown', tryPlayMusicOnce, {passive:true});
+  addEventListener('keydown', tryPlayMusicOnce, {passive:true});
   musicBtn.addEventListener('click', (e)=>{ e.stopPropagation(); toggleMusic(); });
   music.addEventListener('error', ()=>{ console.warn('Audio "wind.mp3" no encontrado o inválido.'); });
 
@@ -153,7 +148,7 @@
 
   function pathY_world(wx){
     const wavelengthPx = canvas.width * WAVELENGTH;
-    const nx = (wx / wavelengthPx) * Math.PI * 2;
+    const nx = (wx / Math.max(1,wavelengthPx)) * Math.PI * 2;
     const amplitude = canvas.height * AMPLITUDE_FACTOR;
     const main = Math.sin(nx + frame * PATH_SPEED) * amplitude;
     const second = Math.sin(nx * 2 + frame * PATH_SPEED * 0.6) * amplitude * SECOND_HARMONIC;
@@ -180,7 +175,7 @@
       this.falling = false;
       this.stain = 0;
 
-      // inicializar contadores de salto
+      // === CORRECCIONES: inicializar contador de saltos y límite ===
       this.jumpCount = 0;
       this.maxJumps = 2; // doble salto por defecto
     }
@@ -208,6 +203,12 @@
         const phase = (this.worldX / (canvas.width * WAVELENGTH)) * Math.PI * 2;
         const followBob = Math.sin(phase + frame * PATH_SPEED) * (canvas.height * AMPLITUDE_FACTOR * amplitudeFactor);
         const desiredY = desiredBase - this.height * 0.35 + followBob;
+
+        // === CORRECCIÓN: resetear contaje de saltos cuando la cometa "vuelve a su sitio" ===
+        if (Math.abs(this.y - desiredY) < 6) {
+          this.jumpCount = 0;
+        }
+
         const force = SPRING_K * (desiredY - this.y) - SPRING_C * this.vy + this.jumpImpulse;
         const accel = force / this.mass;
         this.vy += accel * dt;
@@ -218,11 +219,6 @@
         if(this.y < topLimit){ this.y = topLimit; this.vy = Math.max(0,this.vy); }
         if(this.y > bottomLimit){ this.y = bottomLimit; this.vy = Math.min(0,this.vy); }
         this.tilt = clamp(this.vy * 0.012 + 0.12, -0.6, 0.6);
-
-        // resetear conteo de saltos cuando el kite esté estable cerca de la trayectoria
-        if(Math.abs(this.vy) < 0.9 && Math.abs(this.y - desiredY) < 6){
-          this.jumpCount = 0;
-        }
       }
     }
     jump(){
@@ -230,14 +226,14 @@
       const max = (typeof this.maxJumps === 'number') ? this.maxJumps : 2;
       if (this.jumpCount >= max) return;
 
-      // impulso instantáneo: asignamos la velocidad vertical
-      const multiplier = 0.75; // ajusta entre 0.5 y 1.0 para fuerza
+      // impulso instantáneo: asignamos velocidad vertical (negativa = hacia arriba)
+      const multiplier = 0.72; // ajuste: salto más responsivo que antes
       this.vy = JUMP_IMPULSE * multiplier;
 
-      // limpiamos cualquier impulso previo usado por la versión antigua
+      // limpiamos impulso antiguo (compatibilidad)
       this.jumpImpulse = 0;
 
-      // contamos el salto (para doble salto)
+      // contamos el salto (doble salto soportado)
       this.jumpCount++;
     }
 
@@ -293,6 +289,7 @@
       this.hit = false;
       this.flap = Math.random()*6;
       this.col = `rgba(18,18,18,${rand(0.88,0.98)})`;
+      this.visFade = 1; // para feedback visual si necesario
     }
 
     update(dt){
@@ -300,11 +297,17 @@
       const targetY = pathY_world(this.worldX) + Math.sin(this.flap*0.5)*6 + rand(-6,6);
       this.y += (targetY - this.y) * 0.04;
       this.flap += 0.22 + Math.random()*0.06;
+      if(this.hit){
+        // si fue golpeada, la hacemos alejar un poco y desvanecer lentamente
+        this.worldX -= 2.0;
+        this.visFade = Math.max(0, this.visFade - 0.02);
+      }
     }
     screenX(){ return this.worldX - worldX; }
     draw(){
       const sx = this.screenX();
       ctx.save(); ctx.translate(sx, this.y);
+      ctx.globalAlpha = this.visFade;
       ctx.beginPath(); ctx.ellipse(0,0,this.w*0.28,this.h*0.5,0,0,Math.PI*2); ctx.fillStyle = this.col; ctx.fill();
       const wingSpan = this.w*0.9; const wingY = Math.sin(this.flap)*8;
       ctx.beginPath(); ctx.moveTo(-wingSpan*0.3,0); ctx.quadraticCurveTo(-wingSpan*0.05,-16+wingY,wingSpan*0.45,-6); ctx.moveTo(-wingSpan*0.3,0); ctx.quadraticCurveTo(-wingSpan*0.05,16-wingY,wingSpan*0.45,6);
@@ -394,11 +397,10 @@
 
   // Pointer/touch/click -> salto (handler registrado globalmente para evitar casos en que canvas no reciba el evento)
   function handlePointerJump(e){
-    // evitar que gestos del sistema (p.ej. scroll) interfieran cuando tocamos para jugar
     if(e && e.preventDefault) try { e.preventDefault(); } catch(err) {}
 
     // si el objetivo está dentro de controles UI, ignoramos (no queremos que los botones disparen saltos)
-    if (e.target && (e.target.closest('.menu-card') || e.target.closest('.music-toggle') || e.target.closest('.mode-btn') || e.target.closest('.start-btn') || e.target.closest('.overlay'))) {
+    if (e.target && (e.target.closest('.menu-card') || e.target.closest('.music-toggle') || e.target.closest('.mode-btn') || e.target.closest('.start-btn'))) {
       return;
     }
 
@@ -416,15 +418,16 @@
     tryPlayMusicOnce();
   }
 
-  // registrar globalmente (captura amplia). Usamos passive:false y capture:true para permitir preventDefault correctamente en móviles
-  const captureOpts = { passive: false, capture: true };
-  window.addEventListener('pointerdown', handlePointerJump, captureOpts);
-  window.addEventListener('touchstart', handlePointerJump, captureOpts);
-  window.addEventListener('mousedown', handlePointerJump, captureOpts);
+  // registrar globalmente (captura amplia). Usamos passive:false para poder preventDefault()
+  window.addEventListener('pointerdown', handlePointerJump, { passive: false });
+  // fallbacks para compatibilidad con navegadores antiguos
+  window.addEventListener('mousedown', handlePointerJump, { passive: false });
+  window.addEventListener('touchstart', handlePointerJump, { passive: false });
 
-  // evento separado para el intento de reproducir música (no necesita preventDefault)
-  window.addEventListener('pointerdown', tryPlayMusicOnce, { passive: true, capture: true });
-  window.addEventListener('keydown', tryPlayMusicOnce, { passive: true });
+  // clicks fuera del canvas sólo despiertan audio / no saltan
+  document.addEventListener('pointerdown', (e) => {
+    if(!gameStarted || menu.style.display === 'flex') tryPlayMusicOnce();
+  }, { passive: true });
 
   // UI buttons
   btnEterno.addEventListener('click', ()=>{ mode='eterno'; btnEterno.classList.add('active'); btnEterno.setAttribute('aria-pressed','true'); btnFugaz.classList.remove('active'); btnFugaz.setAttribute('aria-pressed','false'); fugazControls.style.display='none'; });
@@ -436,11 +439,11 @@
   // focus canvas when starting to ensure Space works
   startBtn.addEventListener('click', ()=>{
     menu.style.display='none';
-    menu.style.pointerEvents = 'none';
     try { document.activeElement && document.activeElement.blur(); canvas.focus(); } catch(e){}
     birds=[]; clouds = Array.from({length:20}, ()=> new Cloud()); drops = []; flakes = [];
     kite = new Kite(Math.round(canvas.width * 0.22));
-    score = 100; frame = 0; worldX = 0; frameSpawn = 0; gameOver=false;
+    score = 0; // por defecto mejor comenzar en 0
+    frame = 0; worldX = 0; frameSpawn = 0; gameOver=false;
     if(mode==='fugaz'){ durationSec = minutes * 60; startTime = performance.now(); } else { durationSec = Infinity; startTime = 0; }
     gameStarted = true;
     tryPlayMusicOnce();
@@ -449,13 +452,12 @@
 
   function resetToMenu(){
     menu.style.display='flex';
-    menu.style.pointerEvents = 'auto';
-    if(gameOver) { gameOverEl.classList.add('hidden'); gameOverEl.style.pointerEvents = 'none'; }
+    if(gameOver) gameOverEl.style.display='none';
     gameOver=false; gameStarted=false; durationSec=Infinity; startTime=0;
     birds=[]; clouds = Array.from({length:20}, ()=> new Cloud());
     drops = []; flakes = [];
     kite = new Kite(Math.round(canvas.width * 0.22));
-    score = 100; hud.textContent = `Score: ${score}`;
+    score = 0; hud.textContent = `Score: ${score}`;
     weather = 'clear'; weatherTimer = 0; weatherDuration = 0; weatherLabelTimer = 0; weatherIndicator.classList.remove('visible');
     gust = { strength:0, timer:0, duration:0, active:false };
     if(mode === 'fugaz'){ fugazControls.style.display='block'; btnFugaz.classList.add('active'); btnEterno.classList.remove('active'); } else { fugazControls.style.display='none'; btnEterno.classList.add('active'); btnFugaz.classList.remove('active'); }
@@ -464,12 +466,12 @@
   function endGameNow(){
     gameOver = true; gameStarted = false;
     finalScoreEl.textContent = `Puntaje: ${score}`;
-    gameOverEl.classList.remove('hidden');
-    gameOverEl.style.pointerEvents = 'auto';
+    gameOverEl.style.display = 'flex';
   }
 
   // ----------------- CLIMA / GUSTS -----------------
   function scheduleNextWeather(){
+    // weatherDuration se cuenta en FRAMES, por eso multiplicamos por ~60 (segundos -> frames)
     weatherDuration = Math.round(rand(WEATHER_MIN_SEC, WEATHER_MAX_SEC) * 60);
     weatherTimer = 0;
     const r = Math.random();
@@ -559,11 +561,14 @@
       b.update(dt);
       b.draw();
       if(!b.hit && b.collide(kite.rect())){
+        // al colisionar: restar score una vez y marcar ave como hit
         score = Math.max(0, score - 10);
         b.hit = true;
+        // empujoncito visual
+        b.worldX += 32;
         hud.textContent = `Score: ${score}`;
       }
-      if(b.offscreen()) birds.splice(i,1);
+      if(b.offscreen() || b.visFade <= 0.02) birds.splice(i,1);
     }
 
     if(gameStarted && weather === 'snow' && flakes.length){
@@ -625,5 +630,4 @@
 
 </body>
 </html>
-
 
